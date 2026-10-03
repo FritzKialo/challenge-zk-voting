@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Address } from "@scaffold-ui/components";
-import { createPublicClient, createWalletClient, getContract, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { createPublicClient, createTestClient, createWalletClient, getContract, http, parseEther, toHex } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { hardhat } from "viem/chains";
 import { useAccount } from "wagmi";
 import { useDeployedContractInfo, useScaffoldEventHistory } from "~~/hooks/scaffold-eth";
@@ -14,10 +14,6 @@ import {
   loadProofFromLocalStorage,
   saveBurnerWalletToLocalStorage,
 } from "~~/utils/proofStorage";
-
-////// Checkpoint 9 //////
-// import { createTestClient, parseEther } from "viem";
-// import { generatePrivateKey } from "viem/accounts";
 
 type LocalProofData = {
   proof: Uint8Array;
@@ -36,15 +32,29 @@ const sendVoteWithBurner = async ({
   proofData: LocalProofData;
 }): Promise<string> => {
   ////// Checkpoint 9 //////
-  console.debug(
-    "Checkpoint 9",
-    !!viemContract,
-    !!publicClient,
-    !!walletAddress,
-    !!proofData,
-    uint8ArrayToHexString(new Uint8Array(0)),
-  ); // placeholder
-  throw new Error("Checkpoint 9"); // placeholder
+  // Fund the fresh burner on the local Hardhat chain so it can pay for gas
+  const testClient = createTestClient({
+    chain: hardhat,
+    mode: "hardhat",
+    transport: http("http://localhost:8545"),
+  });
+  await testClient.setBalance({ address: walletAddress, value: parseEther("1") });
+
+  // The proof may come back from localStorage as a plain object, so normalise it to bytes
+  const proofBytes =
+    proofData.proof instanceof Uint8Array ? proofData.proof : new Uint8Array(Object.values(proofData.proof as any));
+  const proofHex = uint8ArrayToHexString(proofBytes);
+
+  // Public inputs must be bytes32 values, in the circuit's order: nullifierHash, root, vote, depth
+  const inputs = proofData.publicInputs.map((input: any) =>
+    typeof input === "string" && input.startsWith("0x") ? (input as `0x${string}`) : toHex(BigInt(input), { size: 32 }),
+  );
+  const [nullifierHash, root, voteValue, depth] = inputs;
+
+  const hash = await viemContract.write.vote([proofHex, nullifierHash, root, voteValue, depth]);
+  await publicClient.waitForTransactionReceipt({ hash });
+
+  return hash;
 };
 
 export const VoteWithBurnerHardhat = ({ contractAddress }: { contractAddress?: `0x${string}` }) => {
@@ -57,7 +67,10 @@ export const VoteWithBurnerHardhat = ({ contractAddress }: { contractAddress?: `
 
   const generateBurnerWallet = () => {
     ////// Checkpoint 9 //////
-    const wallet = undefined as unknown as { address: `0x${string}`; privateKey: `0x${string}` }; // placeholder
+    // A brand-new keypair with no link to the registration address
+    const privateKey = generatePrivateKey();
+    const account = privateKeyToAccount(privateKey);
+    const wallet = { address: account.address as `0x${string}`, privateKey: privateKey as `0x${string}` };
 
     setBurnerWallet(wallet);
 

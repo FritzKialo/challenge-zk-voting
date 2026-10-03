@@ -16,48 +16,47 @@ export default deployScript(
   async ({ deploy, namedAccounts }) => {
     const { deployer } = namedAccounts;
 
-    const ownerAddress = "0x0000000000000000000000000000000000000001";
+    // Owner of the voting contract (can add voters to the allowlist)
+    const ownerAddress = "0x2b39f858cbd44530CFe1C34984F6242eA2C01c24";
 
     /// checkpoint 6 //////
-    const verifierAddress = "0x0000000000000000000000000000000000000002"; // placeholder
-    // const verifier = await deploy("HonkVerifier", {
-    //   account: deployer,
-    //   artifact: artifacts.HonkVerifier,
-    //   args: [],
-    // });
+    const verifier = await deploy("HonkVerifier", {
+      account: deployer,
+      artifact: artifacts.HonkVerifier,
+      args: [],
+    });
 
     /// checkpoint 2 //////
-    const leanIMTAddress = "0x0000000000000000000000000000000000000003"; // placeholder
-    // const poseidon3 = await deploy("PoseidonT3", {
-    //   account: deployer,
-    //   artifact: artifacts.PoseidonT3,
-    //   args: [],
-    // });
+    const poseidon3 = await deploy("PoseidonT3", {
+      account: deployer,
+      artifact: artifacts.PoseidonT3,
+      args: [],
+    });
 
-    // const leanIMT = await deploy(
-    //   "LeanIMT",
-    //   {
-    //     account: deployer,
-    //     artifact: artifacts.LeanIMT,
-    //     args: [],
-    //   },
-    //   {
-    //     libraries: {
-    //       PoseidonT3: poseidon3.address,
-    //     },
-    //   },
-    // );
+    const leanIMT = await deploy(
+      "LeanIMT",
+      {
+        account: deployer,
+        artifact: artifacts.LeanIMT,
+        args: [],
+      },
+      {
+        libraries: {
+          PoseidonT3: poseidon3.address,
+        },
+      },
+    );
 
     await deploy(
       "Voting",
       {
         account: deployer,
         artifact: artifacts.Voting,
-        args: [ownerAddress, verifierAddress, "Should we build zk apps?"],
+        args: [ownerAddress, verifier.address, "Should we build zk apps?"],
       },
       {
         libraries: {
-          LeanIMT: leanIMTAddress,
+          LeanIMT: leanIMT.address,
         },
       },
     );

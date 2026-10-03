@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 //// Checkpoint 8 //////
-// import { UltraHonkBackend } from "@aztec/bb.js";
-// // @ts-ignore
-// import { Noir } from "@noir-lang/noir_js";
-// import { LeanIMT } from "@zk-kit/lean-imt";
-// import { poseidon1, poseidon2 } from "poseidon-lite";
+import { UltraHonkBackend } from "@aztec/bb.js";
+// @ts-ignore
+import { Noir } from "@noir-lang/noir_js";
+import { LeanIMT } from "@zk-kit/lean-imt";
+import { poseidon1, poseidon2 } from "poseidon-lite";
 import { useAccount } from "wagmi";
 import { useDeployedContractInfo, useScaffoldReadContract } from "~~/hooks/scaffold-eth";
 import { useChallengeState } from "~~/services/store/challengeStore";
@@ -25,11 +25,44 @@ const generateProof = async (
 ) => {
   //// Checkpoint 8 //////
   try {
-    void [_root, _vote, _depth, _nullifier, _secret, _index, _leaves, _circuitData];
-    return {
-      proof: new Uint8Array([0]),
-      publicInputs: [0n],
+    // Public hash of the private nullifier (tracked on-chain against double voting)
+    const nullifierHash = poseidon1([BigInt(_nullifier)]);
+
+    // Rebuild the Merkle tree exactly as the contract built it (oldest leaf first)
+    const calculatedTree = new LeanIMT((a: bigint, b: bigint) => poseidon2([a, b]));
+    const leaves = _leaves.map(event => BigInt(event.args.value)).reverse();
+    calculatedTree.insertMany(leaves);
+
+    // Merkle inclusion proof: the siblings along the path from our leaf to the root
+    const merkleProof = calculatedTree.generateProof(_index);
+    const sibs: string[] = Array.from(merkleProof.siblings, s => s.toString());
+
+    // The circuit expects a fixed-length array of 16 siblings
+    while (sibs.length < 16) {
+      sibs.push("0");
+    }
+
+    // Circuit inputs (names must match main.nr)
+    const input = {
+      nullifier_hash: nullifierHash.toString(),
+      nullifier: BigInt(_nullifier).toString(),
+      secret: BigInt(_secret).toString(),
+      root: _root.toString(),
+      vote: _vote,
+      depth: Number(_depth).toString(),
+      index: _index.toString(),
+      siblings: sibs,
     };
+
+    // Run the circuit to get the witness
+    const noir = new Noir(_circuitData);
+    const { witness } = await noir.execute(input);
+
+    // Generate the ZK proof (keccak hashing to match the Solidity verifier)
+    const honk = new UltraHonkBackend(_circuitData.bytecode, { threads: 1 });
+    const { proof, publicInputs } = await honk.generateProof(witness, { keccak: true });
+
+    return { proof, publicInputs };
   } catch (error) {
     console.log(error);
     throw error;

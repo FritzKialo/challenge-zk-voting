@@ -4,7 +4,7 @@ pragma solidity >=0.8.0 <0.9.0;
 import { LeanIMT, LeanIMTData } from "@zk-kit/lean-imt.sol/LeanIMT.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 /// Checkpoint 6 //////
-// import {IVerifier} from "./Verifier.sol";
+import { IVerifier } from "./Verifier.sol";
 
 contract Voting is Ownable {
     using LeanIMT for LeanIMTData;
@@ -30,8 +30,13 @@ contract Voting is Ownable {
     uint256 private s_noVotes;
 
     /// Checkpoint 2 //////
+    LeanIMTData private s_tree;
+    mapping(address => bool) private s_hasRegistered;
+    mapping(uint256 => bool) private s_commitments;
 
     /// Checkpoint 6 //////
+    IVerifier public immutable i_verifier;
+    mapping(bytes32 => bool) private s_nullifierHashes;
 
     //////////////
     /// Events ///
@@ -55,6 +60,7 @@ contract Voting is Ownable {
     constructor(address _owner, address _verifier, string memory _question) Ownable(_owner) {
         s_question = _question;
         /// Checkpoint 6 //////
+        i_verifier = IVerifier(_verifier);
     }
 
     //////////////////
@@ -85,6 +91,24 @@ contract Voting is Ownable {
      */
     function register(uint256 _commitment) public {
         /// Checkpoint 2 //////
+        if (!s_voters[msg.sender]) {
+            revert Voting__NotAllowedToVote();
+        }
+        if (s_hasRegistered[msg.sender]) {
+            revert Voting__NotAllowedToVote();
+        }
+        if (s_commitments[_commitment]) {
+            revert Voting__CommitmentAlreadyAdded(_commitment);
+        }
+
+        s_commitments[_commitment] = true;
+        s_hasRegistered[msg.sender] = true;
+
+        // The new leaf's index is the tree size before the insert
+        uint256 index = s_tree.size;
+        s_tree.insert(_commitment);
+
+        emit NewLeaf(index, _commitment);
     }
 
     /**
@@ -100,6 +124,39 @@ contract Voting is Ownable {
      */
     function vote(bytes memory _proof, bytes32 _nullifierHash, bytes32 _root, bytes32 _vote, bytes32 _depth) public {
         /// Checkpoint 6 //////
+        // 1. Validate the root
+        if (_root == bytes32(0)) {
+            revert Voting__EmptyTree();
+        }
+        if (_root != bytes32(s_tree.root())) {
+            revert Voting__InvalidRoot();
+        }
+
+        // 2. Verify the proof (public inputs in the same order as the circuit)
+        bytes32[] memory publicInputs = new bytes32[](4);
+        publicInputs[0] = _nullifierHash;
+        publicInputs[1] = _root;
+        publicInputs[2] = _vote;
+        publicInputs[3] = _depth;
+
+        if (!i_verifier.verify(_proof, publicInputs)) {
+            revert Voting__InvalidProof();
+        }
+
+        // 3. Prevent double voting
+        if (s_nullifierHashes[_nullifierHash]) {
+            revert Voting__NullifierHashAlreadyUsed(_nullifierHash);
+        }
+        s_nullifierHashes[_nullifierHash] = true;
+
+        bool yesVote = _vote == bytes32(uint256(1));
+        if (yesVote) {
+            s_yesVotes++;
+        } else {
+            s_noVotes++;
+        }
+
+        emit VoteCast(_nullifierHash, msg.sender, yesVote, block.timestamp, s_yesVotes, s_noVotes);
     }
 
     /////////////////////////
@@ -124,14 +181,14 @@ contract Voting is Ownable {
         yesVotes = s_yesVotes;
         noVotes = s_noVotes;
         /// Checkpoint 2 //////
-        // size = s_tree.size;
-        // depth = s_tree.depth;
-        // root = s_tree.root();
+        size = s_tree.size;
+        depth = s_tree.depth;
+        root = s_tree.root();
     }
 
     function getVoterData(address _voter) public view returns (bool voter, bool registered) {
         voter = s_voters[_voter];
-        // /// Checkpoint 2 //////
-        // registered = s_hasRegistered[_voter];
+        /// Checkpoint 2 //////
+        registered = s_hasRegistered[_voter];
     }
 }

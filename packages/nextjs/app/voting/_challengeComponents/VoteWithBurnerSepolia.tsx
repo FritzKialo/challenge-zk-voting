@@ -25,7 +25,7 @@ const pimlicoUrl = `https://api.pimlico.io/v2/${sepolia.id}/rpc?apikey=${process
 
 const CHAIN_USED = sepolia;
 //// Checkpoint 10 //////
-// const RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com";
+const RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com";
 
 const pimlicoClient = createPimlicoClient({
   chain: CHAIN_USED,
@@ -36,6 +36,22 @@ const pimlicoClient = createPimlicoClient({
   },
 });
 
+const uint8ArrayToHexString = (buffer: Uint8Array): `0x${string}` => {
+  const hex: string[] = [];
+  buffer.forEach(function (i) {
+    let h = i.toString(16);
+    if (h.length % 2) {
+      h = "0" + h;
+    }
+    hex.push(h);
+  });
+  return `0x${hex.join("")}`;
+};
+
+// localStorage uses JSON.stringify, which can't serialize BigInt, so convert BigInts to strings first
+const toJsonSafe = (value: any) =>
+  JSON.parse(JSON.stringify(value, (_key, v) => (typeof v === "bigint" ? v.toString() : v)));
+
 const createSmartAccount = async (): Promise<{
   smartAccountClient: any;
   smartAccount: `0x${string}`;
@@ -43,9 +59,40 @@ const createSmartAccount = async (): Promise<{
 }> => {
   try {
     //// Checkpoint 10 //////
-    void [createSmartAccountClient, toSafeSmartAccount, createPublicClient, generatePrivateKey, privateKeyToAccount]; // placeholder
+    // A brand-new key that has never been used anywhere
+    const privateKey = generatePrivateKey();
+    const wallet = privateKeyToAccount(privateKey);
 
-    throw new Error("Checkpoint 10: implement createSmartAccount"); // placeholder
+    const publicClient = createPublicClient({
+      chain: CHAIN_USED,
+      transport: http(RPC_URL),
+    });
+
+    // Safe smart account owned by the fresh key
+    const account = await toSafeSmartAccount({
+      client: publicClient,
+      owners: [wallet],
+      version: "1.4.1",
+    });
+
+    // Client that sends UserOperations through Pimlico's bundler, with the paymaster paying the gas
+    const smartAccountClient = createSmartAccountClient({
+      account,
+      chain: CHAIN_USED,
+      bundlerTransport: http(pimlicoUrl),
+      paymaster: pimlicoClient,
+      userOperation: {
+        estimateFeesPerGas: async () => {
+          return (await pimlicoClient.getUserOperationGasPrice()).fast;
+        },
+      },
+    });
+
+    return {
+      smartAccountClient,
+      smartAccount: account.address as `0x${string}`,
+      walletOwner: wallet.address as `0x${string}`,
+    };
   } catch (error) {
     console.error("Error creating smart account:", error);
     throw error;
@@ -65,9 +112,33 @@ const voteOnSepolia = async ({
 }): Promise<{ userOpHash: `0x${string}` }> => {
   if (!contractInfo && !contractAddress) throw new Error("Contract not found");
   //// Checkpoint 10 //////
-  void [encodeFunctionData, toHex, proofData, smartAccountClient]; // placeholder
+  const address = (contractAddress || contractInfo?.address) as `0x${string}`;
+  const abi = contractInfo?.abi as any;
 
-  throw new Error("Checkpoint 10: implement voteOSepolia"); // placeholder
+  // The proof may come back from localStorage as a plain object, so normalise it to bytes
+  const proofBytes =
+    proofData.proof instanceof Uint8Array ? proofData.proof : new Uint8Array(Object.values(proofData.proof as any));
+  const proofHex = uint8ArrayToHexString(proofBytes);
+
+  // Public inputs as bytes32, in circuit order: nullifierHash, root, vote, depth
+  const inputs = proofData.publicInputs.map((input: any) =>
+    typeof input === "string" && input.startsWith("0x") ? (input as `0x${string}`) : toHex(BigInt(input), { size: 32 }),
+  );
+  const [nullifierHash, root, voteValue, depth] = inputs;
+
+  // Same arguments as the local vote
+  const data = encodeFunctionData({
+    abi,
+    functionName: "vote",
+    args: [proofHex, nullifierHash, root, voteValue, depth],
+  });
+
+  // Send as a UserOperation and keep its hash
+  const userOpHash = await smartAccountClient.sendUserOperation({
+    calls: [{ to: address, data, value: 0n }],
+  });
+
+  return { userOpHash };
 };
 
 export const VoteWithBurnerSepolia = ({ contractAddress }: { contractAddress?: `0x${string}` }) => {
@@ -217,11 +288,11 @@ export const VoteWithBurnerSepolia = ({ contractAddress }: { contractAddress?: `
                   setHasSuccessfulVote(true);
 
                   if (effectiveContractAddress && userAddress) {
-                    const enhancedReceipt = {
+                    const enhancedReceipt = toJsonSafe({
                       ...receipt,
                       smartAccountAddress: currentSmartAccount,
                       walletOwner: currentWalletOwner,
-                    };
+                    });
                     saveTransactionResultToLocalStorage(
                       userOpHash,
                       true,
@@ -237,11 +308,11 @@ export const VoteWithBurnerSepolia = ({ contractAddress }: { contractAddress?: `
                   setTxStatus("error");
 
                   if (effectiveContractAddress && userAddress) {
-                    const enhancedReceipt = {
+                    const enhancedReceipt = toJsonSafe({
                       ...receipt,
                       smartAccountAddress: currentSmartAccount,
                       walletOwner: currentWalletOwner,
-                    };
+                    });
                     saveTransactionResultToLocalStorage(
                       userOpHash,
                       false,
@@ -266,12 +337,12 @@ export const VoteWithBurnerSepolia = ({ contractAddress }: { contractAddress?: `
                       true,
                       effectiveContractAddress,
                       userAddress,
-                      {
+                      toJsonSafe({
                         userOpHash,
                         timedOut: true,
                         smartAccountAddress: currentSmartAccount,
                         walletOwner: currentWalletOwner,
-                      },
+                      }),
                       "Transaction submitted successfully but receipt timed out",
                     );
                     setVotedSmartAccount((currentSmartAccount as `0x${string}`) || null);
